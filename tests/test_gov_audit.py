@@ -150,6 +150,51 @@ class ExcludeMatching(unittest.TestCase):
         self.assertFalse(g.is_excluded(Path("src/a.ts"), []))
 
 
+class ExcludeReachesEveryTool(unittest.TestCase):
+    """--exclude 和内置排除目录要传到每个自己扫目录的工具，否则指标混进文档、构建产物。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "src").mkdir()
+        (self.root / "src" / "a.py").write_text("x = 1\n")
+        (self.root / "docs" / "design").mkdir(parents=True)
+        (self.root / "docs" / "design" / "b.py").write_text("y = 2\n")
+        (self.root / "package.json").write_text("{}")
+        self.proj = g.detect(self.root, ["docs"])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_globs_cover_builtin_dirs_and_user_patterns(self):
+        globs = g.exclude_globs(self.proj)
+        self.assertIn("docs/**", globs)
+        self.assertIn("**/.next/**", globs)
+        self.assertIn("**/node_modules/**", globs)
+        self.assertEqual(len(globs), len(set(globs)))
+
+    def test_ruff_gets_extend_exclude(self):
+        args = g.ruff_args(self.proj)
+        i = args.index("--extend-exclude")
+        self.assertIn("docs/**", args[i + 1].split(","))
+
+    def test_pyright_only_checks_files_left_after_exclude(self):
+        self.assertEqual(g.pyright_targets(self.proj), ["src/a.py"])
+
+    def test_knip_gets_temp_ignore_config_when_project_has_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = g.knip_config(self.proj, Path(tmp))
+            self.assertIsNotNone(cfg)
+            data = json.loads(Path(cfg).read_text())
+            self.assertIn("docs/**", data["ignore"])
+            self.assertIn("**/.next/**", data["ignore"])
+
+    def test_knip_keeps_project_config(self):
+        (self.root / "knip.json").write_text("{}")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(g.knip_config(self.proj, Path(tmp)))
+
+
 class AuditDoesNotTouchCode(unittest.TestCase):
     def test_audit_only_writes_into_out_dir(self):
         with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as out:

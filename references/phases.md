@@ -26,6 +26,11 @@ python3 ~/.agents/skills/project-governance/scripts/gov_audit.py audit --root . 
 
 1. 先看报告里有没有"失败"状态的指标。失败多半是环境问题：没装依赖、没有 lock 文件。修好再重跑，不要带着失败的指标存基线。
 2. 生成代码、测试样本、第三方拷贝进来的代码不该算进指标，用 `--exclude` 排除后加 `--force` 重存基线。
+   排除规则（连同内置的 node_modules、.next、dist 等）会传给每个自己扫目录的工具：ruff 用 `--extend-exclude`，
+   pyright 只传排除后剩下的文件，jscpd 用 `--ignore`，knip 在项目没有 knip 配置时用临时配置的 `ignore`。
+   项目自己有 knip 配置时以项目配置为准，要排除就写进它的 `ignore`。
+   嵌套的独立前端（自己有 package.json、不是 workspace）根目录 knip 看不懂，死代码候选会大量误报，先给项目写 knip 配置再信这项指标。
+   脚本升级或排除规则改了以后，指标口径跟着变，用 `audit --save-baseline --force` 重存基线，不要拿新旧口径直接比。
 3. 把报告整理成问题清单，每条归一类：
    - **真 bug**：能说出复现步骤。
    - **死代码**：工具列出的候选，还没复核。

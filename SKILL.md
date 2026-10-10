@@ -1,6 +1,6 @@
 ---
 name: project-governance
-version: 0.1.0
+version: 0.1.1
 description: >-
   中大型项目（尤其是 AI 编程写出来的）从"修 bug 像打地鼠"走到"能持续维护"的治理流程：体检 → 建测试安全网 →
   删死代码 → 修 bug → 工程化治理 → 交接文档 → 长期门禁。自带体检脚本和"只许变好"检查（gov_audit.py）。
@@ -64,7 +64,7 @@ GOV=~/.agents/skills/project-governance/scripts/gov_audit.py
 
 # 阶段 1：体检并存基线（报告写到 <项目>/.governance/，不改代码）
 python3 $GOV audit --root <项目> --save-baseline
-# 有生成代码、测试样本等目录时排除掉，排除规则会存进基线
+# 有生成代码、测试样本、未跟踪的设计产物等目录时排除掉；排除规则会存进基线，并传给 ruff / pyright / knip / jscpd
 python3 $GOV audit --root <项目> --exclude generated tests/fixtures --save-baseline
 
 # 之后每次提交前、CI 里：只许变好（0 通过 / 1 变差 / 2 无法判断）

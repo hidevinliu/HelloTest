@@ -295,6 +295,44 @@ def _json_check(key: str, cmd: list[str] | None, proj: Project, timeout: int, pa
     return c
 
 
+KNIP_CONFIG_NAMES = (
+    "knip.json", ".knip.json", "knip.jsonc", ".knip.jsonc",
+    "knip.js", "knip.ts", "knip.config.js", "knip.config.ts",
+)
+
+
+def exclude_globs(p: Project) -> list[str]:
+    """内置排除目录 + 用户的 --exclude，统一成 glob。自己扫目录的工具（ruff / knip / jscpd）都用这一份。"""
+    globs = [f"**/{d}/**" for d in sorted(EXCLUDED_DIRS)]
+    globs += [pat if "*" in pat else pat.rstrip("/") + "/**" for pat in p.exclude]
+    return list(dict.fromkeys(globs))
+
+
+def ruff_args(p: Project) -> list[str]:
+    return ["check", ".", "--output-format", "json", "--exit-zero", "--no-cache",
+            "--extend-exclude", ",".join(exclude_globs(p))]
+
+
+def pyright_targets(p: Project) -> list[str]:
+    """pyright 命令行没有排除参数，只能把排除后剩下的 Python 文件逐个传进去。"""
+    return [f.as_posix() for f in p.files if f.suffix in (".py", ".pyi")]
+
+
+def knip_config(p: Project, tmp: Path) -> str | None:
+    """项目没有 knip 配置时，写一份只含 ignore 的临时配置（其余沿用 knip 默认）；有配置就尊重项目的。"""
+    if any((p.root / n).exists() for n in KNIP_CONFIG_NAMES):
+        return None
+    pkg = p.root / "package.json"
+    try:
+        if pkg.exists() and "knip" in json.loads(pkg.read_text(encoding="utf-8")):
+            return None
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[提示] package.json 读取失败，按没有 knip 配置处理：{e}", file=sys.stderr)
+    cfg = tmp / "knip.json"
+    cfg.write_text(json.dumps({"ignore": exclude_globs(p)}, ensure_ascii=False), encoding="utf-8")
+    return str(cfg)
+
+
 def check_tsc(p: Project, t: int) -> Check:
     if not p.is_ts:
         return Check("ts_errors", note="没有 tsconfig.json")
@@ -328,7 +366,14 @@ def check_knip(p: Project, t: int) -> Check:
     if not p.is_js:
         return Check("knip_issues", note="不是 JS/TS 项目")
     cmd = js_tool(p.root, "knip", "knip")
-    return _json_check("knip_issues", cmd and cmd + ["--reporter", "json", "--no-exit-code"], p, t, parse_knip)
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = knip_config(p, Path(tmp))
+        args = ["--reporter", "json", "--no-exit-code"] + (["-c", cfg] if cfg else [])
+        c = _json_check("knip_issues", cmd and cmd + args, p, t, parse_knip)
+    if c.status == "ok":
+        c.note = ("用临时配置排除了内置目录和 --exclude" if cfg
+                  else "用项目自己的 knip 配置；--exclude 不作用于 knip，要排除请写进项目配置的 ignore")
+    return c
 
 
 def check_npm_audit(p: Project, t: int) -> Check:
@@ -347,16 +392,22 @@ def check_npm_audit(p: Project, t: int) -> Check:
 def check_pyright(p: Project, t: int) -> Check:
     if not p.is_py:
         return Check("pyright_errors", note="不是 Python 项目")
+    targets = pyright_targets(p)
+    if not targets:
+        return Check("pyright_errors", note="排除之后没有 Python 文件")
     cmd = py_tool("pyright", p.root)
-    return _json_check("pyright_errors", cmd and cmd + ["--outputjson", "."], p, t, parse_pyright,
-                       ok_codes=(0, 1), missing_note="没有 uvx，也没装 pyright")
+    c = _json_check("pyright_errors", cmd and cmd + ["--outputjson", *targets], p, t, parse_pyright,
+                    ok_codes=(0, 1), missing_note="没有 uvx，也没装 pyright")
+    if c.command:
+        c.command = " ".join(cmd + ["--outputjson", f"<排除后的 {len(targets)} 个 Python 文件>"])
+    return c
 
 
 def check_ruff(p: Project, t: int) -> Check:
     if not p.is_py:
         return Check("ruff_issues", note="不是 Python 项目")
     cmd = py_tool("ruff", p.root)
-    return _json_check("ruff_issues", cmd and cmd + ["check", ".", "--output-format", "json", "--exit-zero", "--no-cache"],
+    return _json_check("ruff_issues", cmd and cmd + ruff_args(p),
                        p, t, parse_ruff, missing_note="没有 uvx，也没装 ruff")
 
 
@@ -395,8 +446,7 @@ def check_jscpd(p: Project, t: int) -> Check:
     with tempfile.TemporaryDirectory() as tmp:
         cmd = ["npx", "-y", "jscpd", ".", "--format", JSCPD_FORMATS, "--reporters", "json",
                "--output", tmp, "--silent"]
-        if p.exclude:
-            cmd += ["--ignore", ",".join(pat if "*" in pat else pat.rstrip("/") + "/**" for pat in p.exclude)]
+        cmd += ["--ignore", ",".join(exclude_globs(p))]
         c = Check("dup_lines", command=" ".join(cmd[:4]) + " --format <代码格式> --reporters json --output <临时目录> --silent")
         code, out, err = run(cmd, p.root, t)
         report = Path(tmp) / "jscpd-report.json"
