@@ -411,14 +411,25 @@ def check_ruff(p: Project, t: int) -> Check:
                        p, t, parse_ruff, missing_note="没有 uvx，也没装 ruff")
 
 
+def vulture_args(p: Project) -> list[str]:
+    """vulture 的 --exclude 拿模式匹配绝对路径：项目本身在 .claude/ 这类被排除的目录下时会把整个项目排掉。
+    和 pyright 一样，只传排除后剩下的 Python 文件。"""
+    return pyright_targets(p) + ["--min-confidence", "60"]
+
+
 def check_vulture(p: Project, t: int) -> Check:
     if not p.is_py:
         return Check("vulture_items", note="不是 Python 项目")
+    args = vulture_args(p)
+    if not args[:-2]:
+        return Check("vulture_items", note="排除之后没有 Python 文件")
     cmd = py_tool("vulture", p.root)
-    excl = ",".join(sorted(EXCLUDED_DIRS) + p.exclude)
     # vulture 发现死代码时退出码是 3，属于正常结果
-    return _json_check("vulture_items", cmd and cmd + [".", "--exclude", excl, "--min-confidence", "60"],
-                       p, t, parse_vulture, ok_codes=(0, 3), missing_note="没有 uvx，也没装 vulture")
+    c = _json_check("vulture_items", cmd and cmd + args, p, t, parse_vulture, ok_codes=(0, 3),
+                    missing_note="没有 uvx，也没装 vulture")
+    if c.command:
+        c.command = " ".join(cmd + [f"<排除后的 {len(args) - 2} 个 Python 文件>", "--min-confidence", "60"])
+    return c
 
 
 def check_pip_audit(p: Project, t: int) -> Check:

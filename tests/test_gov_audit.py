@@ -1,6 +1,7 @@
 """gov_audit.py 的测试。运行：python3 -m unittest discover -s tests -v（在 skill 根目录）。
 样例输出取自 2026-10-09 在真实项目上实测的工具输出。"""
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -193,6 +194,36 @@ class ExcludeReachesEveryTool(unittest.TestCase):
         (self.root / "knip.json").write_text("{}")
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(g.knip_config(self.proj, Path(tmp)))
+
+
+class VultureIgnoresWhereTheProjectLives(unittest.TestCase):
+    """vulture 的 --exclude 拿模式匹配绝对路径：项目本身放在 .claude/ 之类被排除的目录下时，整个项目都被排除，
+    死代码数误报为 0（2026-10-10 在 .claude/worktrees/ 下的 cx-lighthouse 复现）。改成只传排除后剩下的文件。"""
+
+    def make_project(self, parent: Path) -> Path:
+        root = parent / ".claude" / "worktrees" / "proj"
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "a.py").write_text("def used():\n    return 1\n\n\ndef never_called():\n    return 2\n\n\nused()\n")
+        (root / "docs").mkdir()
+        (root / "docs" / "b.py").write_text("def doc_only():\n    return 3\n")
+        return root
+
+    def test_args_list_files_instead_of_scanning_dot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = g.detect(self.make_project(Path(tmp)), [".claude", "docs"])
+            args = g.vulture_args(proj)
+            self.assertNotIn(".", args)
+            self.assertNotIn("--exclude", args)
+            self.assertIn("src/a.py", args)
+            self.assertNotIn("docs/b.py", args)
+
+    @unittest.skipUnless(shutil.which("uvx") or shutil.which("vulture"), "没有 uvx / vulture")
+    def test_real_vulture_counts_dead_code_under_excluded_parent_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = g.detect(self.make_project(Path(tmp)), [".claude", "docs"])  # 和 cx-lighthouse 基线同样排除 .claude
+            c = g.check_vulture(proj, 300)
+            self.assertEqual(c.status, "ok", c.note)
+            self.assertEqual(c.value, 1, c.details)
 
 
 class AuditDoesNotTouchCode(unittest.TestCase):
