@@ -19,7 +19,7 @@
 已核对过输出格式的工具版本（2026-10-09 实测）：
   typescript tsc、knip（--reporter json）、jscpd（--reporters json）、npm audit --json、
   ruff（--output-format json）、pyright（--outputjson）、vulture、pip-audit（-f json）。
-未实测：eslint -f json（devin-blog 没有 eslint 配置）、pnpm audit --json。
+未实测：eslint -f json（实测用的项目没有 eslint 配置）、pnpm audit --json。
 """
 from __future__ import annotations
 

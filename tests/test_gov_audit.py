@@ -198,7 +198,7 @@ class ExcludeReachesEveryTool(unittest.TestCase):
 
 class VultureIgnoresWhereTheProjectLives(unittest.TestCase):
     """vulture 的 --exclude 拿模式匹配绝对路径：项目本身放在 .claude/ 之类被排除的目录下时，整个项目都被排除，
-    死代码数误报为 0（2026-10-10 在 .claude/worktrees/ 下的 cx-lighthouse 复现）。改成只传排除后剩下的文件。"""
+    死代码数误报为 0（2026-10-10 在一个位于 .claude/worktrees/ 下的真实项目复现）。改成只传排除后剩下的文件。"""
 
     def make_project(self, parent: Path) -> Path:
         root = parent / ".claude" / "worktrees" / "proj"
@@ -220,7 +220,7 @@ class VultureIgnoresWhereTheProjectLives(unittest.TestCase):
     @unittest.skipUnless(shutil.which("uvx") or shutil.which("vulture"), "没有 uvx / vulture")
     def test_real_vulture_counts_dead_code_under_excluded_parent_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
-            proj = g.detect(self.make_project(Path(tmp)), [".claude", "docs"])  # 和 cx-lighthouse 基线同样排除 .claude
+            proj = g.detect(self.make_project(Path(tmp)), [".claude", "docs"])  # 和那个真实项目的基线一样排除 .claude
             c = g.check_vulture(proj, 300)
             self.assertEqual(c.status, "ok", c.note)
             self.assertEqual(c.value, 1, c.details)
