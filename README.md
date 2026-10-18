@@ -1,8 +1,8 @@
-# DevinTest
+# HelloTest
 
 **给 AI 写出来的项目做「体检」，再守住「只许变好」。**
 
-AI 编程写得很快，项目大了以后常常变成「修 bug 像打地鼠」：类型错误、死代码、重复代码越积越多，改一处冒一处。DevinTest 做两件事：
+AI 编程写得很快，项目大了以后常常变成「修 bug 像打地鼠」：类型错误、死代码、重复代码越积越多，改一处冒一处。HelloTest 做两件事：
 
 1. **体检**：自动识别项目的技术栈，调用现成的检查工具，把结果汇总成一份中文报告和一组数字指标。
 2. **只许变好**：把这次体检的数字存成基线。以后每次提交都重测一遍，任何一项指标变多就判失败。存量问题不要求一次清零，但不许再变多。
@@ -53,9 +53,9 @@ python3 scripts/gov_audit.py ratchet --root <项目> --update
 
 ## 用了谁的东西
 
-**DevinTest 自己的代码只有脚本、测试、流程文档和模板。** 下面这些工具都不在这个仓库里，也不随它分发；体检时脚本在你的电脑上调用它们，版权归各自作者，按各自的许可证使用：
+**HelloTest 自己的代码只有脚本、测试、流程文档和模板。** 下面这些工具都不在这个仓库里，也不随它分发；体检时脚本在你的电脑上调用它们，版权归各自作者，按各自的许可证使用：
 
-| 工具 | 作者 | 许可证 | 在 DevinTest 里做什么 |
+| 工具 | 作者 | 许可证 | 在 HelloTest 里做什么 |
 |---|---|---|---|
 | [TypeScript](https://github.com/microsoft/TypeScript) | Microsoft | Apache-2.0 | 类型检查 |
 | [Pyright](https://github.com/microsoft/pyright) | Microsoft | MIT | Python 类型检查 |
@@ -93,12 +93,12 @@ python3 scripts/gov_audit.py ratchet --root <项目> --update
 - [red-green-mode](https://github.com/hidevinliu/red-green-mode)：修 bug 的阶段用它跑「红 → 绿」循环，并检查 AI 有没有作弊让测试变绿
 - [mutation-check](https://github.com/hidevinliu/red-green-mode/tree/main/skills/mutation-check)：故意改坏代码，检查测试会不会变红
 
-DevinTest 不依赖它们，单独也能用。
+HelloTest 不依赖它们，单独也能用。
 
 ## 装成 agent skill
 
 ```bash
-git clone https://github.com/hidevinliu/DevinTest.git ~/.agents/skills/project-governance
+git clone https://github.com/hidevinliu/HelloTest.git ~/.agents/skills/project-governance
 # Claude Code 用户也可以放到 ~/.claude/skills/project-governance
 ```
 
@@ -116,4 +116,4 @@ python3 -m unittest discover -s tests
 
 ### English summary
 
-DevinTest gives an AI-written codebase a health check and then enforces a "no new problems" ratchet. `scripts/gov_audit.py` (Python standard library only) detects the stack, runs existing checkers (TypeScript, Pyright, ESLint, Knip, jscpd, Ruff, Vulture, pip-audit, npm/pnpm audit), writes a report, and stores the counts as a baseline. `ratchet` fails (exit 1) if any count goes up, and returns exit 2 when a metric could not be measured. None of those tools are bundled: they are invoked on your machine and remain under their own licenses (listed above). `SKILL.md` describes a 7-stage governance process that coding agents such as Claude Code and Codex can follow. MIT licensed.
+HelloTest gives an AI-written codebase a health check and then enforces a "no new problems" ratchet. `scripts/gov_audit.py` (Python standard library only) detects the stack, runs existing checkers (TypeScript, Pyright, ESLint, Knip, jscpd, Ruff, Vulture, pip-audit, npm/pnpm audit), writes a report, and stores the counts as a baseline. `ratchet` fails (exit 1) if any count goes up, and returns exit 2 when a metric could not be measured. None of those tools are bundled: they are invoked on your machine and remain under their own licenses (listed above). `SKILL.md` describes a 7-stage governance process that coding agents such as Claude Code and Codex can follow. MIT licensed.
