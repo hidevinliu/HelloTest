@@ -36,13 +36,20 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CODE_EXTS = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte", ".astro",
-    ".go", ".rs", ".java", ".kt", ".rb", ".php", ".cs", ".swift",
+# 代码文件扩展名 → 语言。报告里的技术栈按这张表汇总行数。
+LANGUAGES = {
+    ".py": "Python", ".js": "JavaScript", ".jsx": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript",
+    ".ts": "TypeScript", ".tsx": "TypeScript", ".vue": "Vue", ".svelte": "Svelte", ".astro": "Astro",
+    ".go": "Go", ".rs": "Rust", ".java": "Java", ".kt": "Kotlin", ".rb": "Ruby", ".php": "PHP",
+    ".cs": "C#", ".swift": "Swift",
 }
+CODE_EXTS = set(LANGUAGES)
+# 有类型 / lint / 死代码专项检查的语言；其余语言只计入重复代码和超长文件。
+CHECKED_LANGUAGES = {"JavaScript", "TypeScript", "Python"}
 EXCLUDED_DIRS = {
     "node_modules", "dist", "build", ".next", ".nuxt", ".output", "vendor", ".venv", "venv",
     "__pycache__", "coverage", ".git", ".governance", ".turbo", ".cache",
+    ".build", "DerivedData", ".swiftpm",  # Xcode / SwiftPM 构建产物
 }
 JSCPD_FORMATS = (
     "python,javascript,typescript,tsx,jsx,vue,svelte,astro,go,rust,java,kotlin,ruby,php,csharp,swift"
@@ -533,13 +540,32 @@ def run_checks(proj: Project, keys: list[str], timeout: int) -> list[Check]:
 STATUS_ZH = {"ok": "已测", "skipped": "跳过", "failed": "失败"}
 
 
+def stack_lines(proj: Project, by_ext: dict[str, int]) -> list[str]:
+    """技术栈按各语言代码行数从多到少列出；有项目配置但没有代码文件的语言放最后。
+    不能只看配置文件或"有没有 .py"，否则以 Swift 为主、带几个脚本的项目会被报成 Python。"""
+    by_lang: dict[str, int] = {}
+    for ext, n in by_ext.items():
+        by_lang[LANGUAGES[ext]] = by_lang.get(LANGUAGES[ext], 0) + n
+    ranked = sorted(by_lang.items(), key=lambda kv: -kv[1])
+    parts = [f"{lang} {n:,} 行" for lang, n in ranked]
+    config_only = [s for s, on in (("JavaScript", proj.is_js), ("TypeScript", proj.is_ts), ("Python", proj.is_py))
+                   if on and s not in by_lang]
+    if config_only:
+        parts.append("、".join(config_only) + "（只有配置文件，没有代码文件）")
+    out = ["- 技术栈：" + ("、".join(parts) or "未识别")]
+    unchecked = [lang for lang, _ in ranked if lang not in CHECKED_LANGUAGES]
+    if unchecked:
+        out.append(f"- 覆盖范围：{'、'.join(unchecked)} 没有专项检查（类型、lint、死代码），"
+                   "只计入重复代码和超长文件；下面的类型 / lint / 死代码指标只反映 JavaScript、TypeScript、Python 部分")
+    return out
+
+
 def render_report(proj: Project, checks: list[Check], hot: list[str], by_ext: dict[str, int],
                   total_lines: int, since: str, now: str) -> str:
     out = [f"# 项目体检报告 · {proj.root.name}", "",
            f"- 时间：{now}", f"- 路径：`{proj.root}`",
            "- 排除：" + ("、".join(f"`{x}`" for x in proj.exclude) or "无（只排除 node_modules、dist 等常见目录）"),
-           "- 技术栈：" + ("、".join(s for s, on in (("JavaScript", proj.is_js), ("TypeScript", proj.is_ts),
-                                                    ("Python", proj.is_py)) if on) or "未识别"),
+           *stack_lines(proj, by_ext),
            f"- 代码总行数：{total_lines:,}（" + "，".join(f"{e} {n:,}" for e, n in sorted(by_ext.items(), key=lambda kv: -kv[1])) + "）",
            ""]
     if proj.is_js and not proj.has_node_modules:

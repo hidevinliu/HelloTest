@@ -226,6 +226,79 @@ class VultureIgnoresWhereTheProjectLives(unittest.TestCase):
             self.assertEqual(c.value, 1, c.details)
 
 
+class XcodeBuildDirsExcluded(unittest.TestCase):
+    """Xcode / SwiftPM 的构建目录和 node_modules 一样是生成物，不参与统计（issue #1：
+    .build 下每次构建重新生成的 resource_bundle_accessor.swift 被 jscpd 算成 79 行重复）。"""
+
+    GENERATED = ("App/.build/out/DerivedSources/resource_bundle_accessor.swift",
+                 "DerivedData/App/Build/gen.swift",
+                 ".swiftpm/xcode/package.swift")
+
+    def make_project(self, root: Path):
+        (root / "Sources").mkdir()
+        (root / "Sources" / "App.swift").write_text("let a = 1\n")
+        for rel in self.GENERATED:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text("let b = 2\n" * 600)
+
+    def test_walk_fallback_skips_build_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_project(root)
+            proj = g.detect(root)
+            self.assertFalse(proj.is_git)
+            self.assertEqual([f.as_posix() for f in proj.files], ["Sources/App.swift"])
+            self.assertEqual(g.check_large_files(proj)[0].value, 0)
+
+    @unittest.skipUnless(shutil.which("git"), "没有 git")
+    def test_git_tracked_build_dirs_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_project(root)
+            g.run(["git", "init", "-q"], root, 30)
+            g.run(["git", "add", "-A"], root, 30)
+            proj = g.detect(root)
+            self.assertTrue(proj.is_git)
+            self.assertEqual([f.as_posix() for f in proj.files], ["Sources/App.swift"])
+
+    def test_tools_get_build_dirs_in_ignore_globs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            globs = g.exclude_globs(g.detect(Path(tmp)))
+            for d in (".build", "DerivedData", ".swiftpm"):
+                self.assertIn(f"**/{d}/**", globs)
+
+
+class StackReflectsCodeShare(unittest.TestCase):
+    """技术栈按各语言代码行数如实列出（issue #1：Swift 7,999 / Python 1,069 / JS 632 行的项目被报成「Python」）。"""
+
+    def audit_report(self, files: dict[str, str]) -> str:
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as out:
+            for rel, text in files.items():
+                (Path(proj) / rel).parent.mkdir(parents=True, exist_ok=True)
+                (Path(proj) / rel).write_text(text)
+            skip = [k for k in g.METRICS if k != "large_files"]
+            self.assertEqual(g.main(["audit", "--root", proj, "--out", out, "--skip", *skip]), 0)
+            return next(Path(out).glob("audit-*.md")).read_text(encoding="utf-8")
+
+    def stack_line(self, report: str) -> str:
+        return next(ln for ln in report.splitlines() if ln.startswith("- 技术栈："))
+
+    def test_swift_first_project_lists_all_languages_by_lines(self):
+        report = self.audit_report({
+            "Package.swift": "// swift-tools-version:5.9\n",
+            "Sources/App.swift": "let a = 1\n" * 80,
+            "scripts/tool.py": "x = 1\n" * 10,
+            "web/app.js": "let y = 1\n" * 6,
+        })
+        self.assertEqual(self.stack_line(report), "- 技术栈：Swift 81 行、Python 10 行、JavaScript 6 行")
+        self.assertIn("Swift 没有专项检查", report)
+
+    def test_config_only_language_still_listed(self):
+        report = self.audit_report({"package.json": "{}", "tsconfig.json": "{}", "a.py": "x = 1\n"})
+        self.assertEqual(self.stack_line(report), "- 技术栈：Python 1 行、JavaScript、TypeScript（只有配置文件，没有代码文件）")
+        self.assertNotIn("没有专项检查", report)
+
+
 class AuditDoesNotTouchCode(unittest.TestCase):
     def test_audit_only_writes_into_out_dir(self):
         with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as out:
