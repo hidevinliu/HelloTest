@@ -40,12 +40,13 @@ python3 scripts/gov_audit.py ratchet --root <项目> --update
 |---|---|
 | TypeScript 类型错误 | TypeScript（`tsc --noEmit`） |
 | ESLint 问题（错误 + 警告） | ESLint |
+| SwiftLint 问题（错误 + 警告） | SwiftLint |
 | JS/TS 死代码候选（没用到的文件、导出、依赖） | Knip |
 | npm 高危和严重漏洞 | `npm audit` / `pnpm audit` |
 | Python 类型错误 | Pyright |
 | Python lint 问题 | Ruff |
 | Python 死代码候选 | Vulture |
-| Python 依赖的已知漏洞 | pip-audit |
+| Python 依赖的已知漏洞 | pip-audit（uv/poetry 项目先经 export 转换） |
 | 重复代码行数 | jscpd |
 | 超过 500 行的代码文件数 | 脚本自己数 |
 
@@ -61,6 +62,7 @@ python3 scripts/gov_audit.py ratchet --root <项目> --update
 | [Pyright](https://github.com/microsoft/pyright) | Microsoft | MIT | Python 类型检查 |
 | [Playwright](https://github.com/microsoft/playwright) | Microsoft | Apache-2.0 | 流程第 2 阶段推荐用它写核心流程测试；脚本本身不调用 |
 | [ESLint](https://github.com/eslint/eslint) | OpenJS Foundation 及贡献者 | MIT | JS/TS lint |
+| [SwiftLint](https://github.com/realm/SwiftLint) | Realm（现属 MongoDB）及贡献者 | MIT | Swift lint |
 | [Knip](https://github.com/webpro-nl/knip) | Lars Kappert 及贡献者 | ISC | JS/TS 死代码 |
 | [jscpd](https://github.com/kucherenko/jscpd) | Andrey Kucherenko 及贡献者 | MIT | 重复代码 |
 | [Ruff](https://github.com/astral-sh/ruff) | Astral | MIT | Python lint |
@@ -70,7 +72,7 @@ python3 scripts/gov_audit.py ratchet --root <项目> --update
 
 许可证是 2026-10-18 在 npm、PyPI 和 GitHub 上查到的，以各项目当前的声明为准。
 
-已核对过输出格式的（2026-10-09 实测）：`tsc`、`knip --reporter json`、`jscpd --reporters json`、`npm audit --json`、`ruff --output-format json`、`pyright --outputjson`、`vulture`、`pip-audit -f json`。还没实测过的：`eslint -f json`、`pnpm audit --json`。这两项解析失败时，报告会写「失败」。
+已核对过输出格式的（2026-10-09 实测，swiftlint 为 2026-10-23 补测）：`tsc`、`knip --reporter json`、`jscpd --reporters json`、`npm audit --json`、`ruff --output-format json`、`pyright --outputjson`、`vulture`、`pip-audit -f json`。还没实测过的：`eslint -f json`、`pnpm audit --json`。这两项解析失败时，报告会写「失败」。
 
 ## 7 个阶段的治理流程
 
@@ -116,4 +118,4 @@ python3 -m unittest discover -s tests
 
 ### English summary
 
-HelloTest gives an AI-written codebase a health check and then enforces a "no new problems" ratchet. `scripts/gov_audit.py` (Python standard library only) detects the stack, runs existing checkers (TypeScript, Pyright, ESLint, Knip, jscpd, Ruff, Vulture, pip-audit, npm/pnpm audit), writes a report, and stores the counts as a baseline. `ratchet` fails (exit 1) if any count goes up, and returns exit 2 when a metric could not be measured. None of those tools are bundled: they are invoked on your machine and remain under their own licenses (listed above). `SKILL.md` describes a 7-stage governance process that coding agents such as Claude Code and Codex can follow. MIT licensed.
+HelloTest gives an AI-written codebase a health check and then enforces a "no new problems" ratchet. `scripts/gov_audit.py` (Python standard library only) detects the stack, runs existing checkers (TypeScript, Pyright, ESLint, SwiftLint, Knip, jscpd, Ruff, Vulture, pip-audit, npm/pnpm audit), writes a report, and stores the counts as a baseline. `ratchet` fails (exit 1) if any count goes up, and returns exit 2 when a metric could not be measured. None of those tools are bundled: they are invoked on your machine and remain under their own licenses (listed above). `SKILL.md` describes a 7-stage governance process that coding agents such as Claude Code and Codex can follow. MIT licensed.

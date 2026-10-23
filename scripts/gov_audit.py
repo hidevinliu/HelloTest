@@ -18,8 +18,10 @@
 
 已核对过输出格式的工具版本（2026-10-09 实测）：
   typescript tsc、knip（--reporter json）、jscpd（--reporters json）、npm audit --json、
-  ruff（--output-format json）、pyright（--outputjson）、vulture、pip-audit（-f json）。
-未实测：eslint -f json（实测用的项目没有 eslint 配置）、pnpm audit --json。
+  ruff（--output-format json）、pyright（--outputjson）、vulture、pip-audit（-f json）、
+  swiftlint 0.65.1（--reporter json，退出码 2 = 有违规，2026-10-23 实测）。
+未实测：eslint -f json（实测用的项目没有 eslint 配置）、pnpm audit --json、
+poetry export（poetry.lock 转换路径；uv export 已于 2026-10-23 在真实 uv 项目实测）。
 """
 from __future__ import annotations
 
@@ -36,20 +38,24 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# 代码文件扩展名 → 语言。报告里的技术栈按这张表汇总行数。
-LANGUAGES = {
-    ".py": "Python", ".js": "JavaScript", ".jsx": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript",
-    ".ts": "TypeScript", ".tsx": "TypeScript", ".vue": "Vue", ".svelte": "Svelte", ".astro": "Astro",
-    ".go": "Go", ".rs": "Rust", ".java": "Java", ".kt": "Kotlin", ".rb": "Ruby", ".php": "PHP",
-    ".cs": "C#", ".swift": "Swift",
+CODE_EXTS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte", ".astro",
+    ".go", ".rs", ".java", ".kt", ".rb", ".php", ".cs", ".swift",
 }
-CODE_EXTS = set(LANGUAGES)
-# 有类型 / lint / 死代码专项检查的语言；其余语言只计入重复代码和超长文件。
-CHECKED_LANGUAGES = {"JavaScript", "TypeScript", "Python"}
 EXCLUDED_DIRS = {
     "node_modules", "dist", "build", ".next", ".nuxt", ".output", "vendor", ".venv", "venv",
     "__pycache__", "coverage", ".git", ".governance", ".turbo", ".cache",
-    ".build", "DerivedData", ".swiftpm",  # Xcode / SwiftPM 构建产物
+    # Xcode / SwiftPM 构建产物：自动生成，扫进去会污染重复代码和超长文件指标
+    ".build", "DerivedData", ".swiftpm", "Index.noindex",
+}
+
+# 代码扩展名 → 语言名（用于报告里的技术栈展示，按行数排序）
+EXT_LANG = {
+    ".py": "Python", ".js": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript",
+    ".jsx": "JavaScript (JSX)", ".ts": "TypeScript", ".tsx": "TypeScript (TSX)",
+    ".vue": "Vue", ".svelte": "Svelte", ".astro": "Astro",
+    ".go": "Go", ".rs": "Rust", ".java": "Java", ".kt": "Kotlin",
+    ".rb": "Ruby", ".php": "PHP", ".cs": "C#", ".swift": "Swift",
 }
 JSCPD_FORMATS = (
     "python,javascript,typescript,tsx,jsx,vue,svelte,astro,go,rust,java,kotlin,ruby,php,csharp,swift"
@@ -61,6 +67,7 @@ DEFAULT_TIMEOUT = 900
 METRICS = {
     "ts_errors": "TypeScript 类型错误",
     "eslint_problems": "ESLint 问题（错误 + 警告）",
+    "swiftlint_issues": "SwiftLint 问题（错误 + 警告）",
     "knip_issues": "JS/TS 死代码候选（未使用的文件/导出/依赖）",
     "npm_vuln_high": "npm 高危 + 严重漏洞",
     "pyright_errors": "pyright 类型错误",
@@ -135,6 +142,7 @@ class Project:
     is_ts: bool
     has_eslint: bool
     is_py: bool
+    is_swift: bool
     has_node_modules: bool
     is_git: bool
     exclude: list[str] = field(default_factory=list)
@@ -179,6 +187,7 @@ def detect(root: Path, exclude: list[str] | None = None) -> Project:
         is_ts=(root / "tsconfig.json").exists(),
         has_eslint=has_eslint,
         is_py=bool(names & {"pyproject.toml", "setup.py", "setup.cfg"}) or py_count > 0,
+        is_swift=any(f.suffix == ".swift" for f in files),
         has_node_modules=(root / "node_modules").is_dir(),
         is_git=is_git,
         exclude=exclude,
@@ -206,6 +215,16 @@ def parse_eslint(text: str) -> tuple[int, list[str]]:
     details = [f"{f['filePath']}：{f.get('errorCount', 0)} 错误 / {f.get('warningCount', 0)} 警告"
                for f in worst[:10] if f.get("errorCount", 0) + f.get("warningCount", 0)]
     return total, details
+
+
+def parse_swiftlint(text: str) -> tuple[int, list[str]]:
+    """swiftlint --reporter json：一个违规一个对象，severity 为 Error / Warning。"""
+    data = json.loads(text)
+    by_rule: dict[str, int] = {}
+    for d in data:
+        by_rule[d.get("rule_id") or "?"] = by_rule.get(d.get("rule_id") or "?", 0) + 1
+    top = sorted(by_rule.items(), key=lambda kv: -kv[1])[:10]
+    return len(data), ["最多的规则：" + "，".join(f"{r} {n}" for r, n in top)] if top else []
 
 
 def parse_knip(text: str) -> tuple[int, list[str]]:
@@ -369,6 +388,26 @@ def check_eslint(p: Project, t: int) -> Check:
     return _json_check("eslint_problems", cmd and cmd + [".", "-f", "json"], p, t, parse_eslint, ok_codes=(0, 1))
 
 
+def check_swiftlint(p: Project, t: int) -> Check:
+    if not p.is_swift:
+        return Check("swiftlint_issues", note="没有 Swift 文件")
+    if not shutil.which("swiftlint"):
+        return Check("swiftlint_issues", status="skipped", note="没有装 SwiftLint（brew install swiftlint）")
+    # 退出码 2 = 有违规，属于正常结果。
+    # SwiftLint 没有命令行排除参数，默认也不排除 .build（2026-10-23 实测会把
+    # 构建产物算进去），所以和 pyright / vulture 一样只传排除后剩下的 Swift 文件；
+    # 项目自己的 .swiftlint.yml 规则配置仍然生效。
+    targets = [f.as_posix() for f in p.files if f.suffix == ".swift"]
+    if not targets:
+        return Check("swiftlint_issues", note="排除之后没有 Swift 文件")
+    cmd = ["swiftlint", "lint", "--reporter", "json", "--quiet", *targets]
+    c = _json_check("swiftlint_issues", cmd, p, t, parse_swiftlint, ok_codes=(0, 2))
+    if c.command:
+        c.command = " ".join(["swiftlint", "lint", "--reporter", "json", "--quiet",
+                              f"<排除后的 {len(targets)} 个 Swift 文件>"])
+    return c
+
+
 def check_knip(p: Project, t: int) -> Check:
     if not p.is_js:
         return Check("knip_issues", note="不是 JS/TS 项目")
@@ -419,8 +458,8 @@ def check_ruff(p: Project, t: int) -> Check:
 
 
 def vulture_args(p: Project) -> list[str]:
-    """vulture 的 --exclude 拿模式匹配绝对路径：项目本身在 .claude/ 这类被排除的目录下时会把整个项目排掉。
-    和 pyright 一样，只传排除后剩下的 Python 文件。"""
+    """vulture 的 --exclude 拿模式匹配绝对路径：项目本身在 .claude/ 这类被排除的目录下时，整个项目都被排除，
+    死代码数误报为 0（2026-10-10 在一个位于 .claude/worktrees/ 下的真实项目复现）。改成只传排除后剩下的文件。"""
     return pyright_targets(p) + ["--min-confidence", "60"]
 
 
@@ -439,22 +478,56 @@ def check_vulture(p: Project, t: int) -> Check:
     return c
 
 
+def resolve_requirements(p: Project, tmp: Path, t: int) -> tuple[list[str], str, str]:
+    """给 pip-audit 准备 -r 输入。返回 (参数列表, 来源说明, 错误)；错误非空表示没有可检查的输入。
+    优先用 requirements*.txt；否则有 uv.lock 用 uv export --frozen 转换，
+    有 poetry.lock 用 poetry export 转换（转换结果只含锁定的具体版本）。"""
+    reqs = sorted(p.root.glob("requirements*.txt"))
+    if reqs:
+        args: list[str] = []
+        for r in reqs:
+            args += ["-r", str(r.relative_to(p.root))]
+        return args, "requirements*.txt", ""
+    if (p.root / "uv.lock").exists():
+        uv = shutil.which("uv")
+        if not uv:
+            return [], "", "有 uv.lock 但没装 uv，无法转换（brew install uv / pipx install uv）"
+        out = tmp / "uv-requirements.txt"
+        code, o, e = run([uv, "export", "--frozen", "--no-hashes", "--format", "requirements-txt",
+                          "-o", str(out)], p.root, t)
+        if code != 0 or not out.exists():
+            return [], "", f"uv export 失败（退出码 {code}）：{tail(e or o)}"
+        return ["-r", str(out)], "uv.lock（uv export --frozen 转换）", ""
+    if (p.root / "poetry.lock").exists():
+        poetry = shutil.which("poetry")
+        if not poetry:
+            return [], "", "有 poetry.lock 但没装 poetry，无法转换（pipx install poetry）"
+        out = tmp / "poetry-requirements.txt"
+        code, o, e = run([poetry, "export", "--without-hashes", "--format", "requirements.txt",
+                          "--output", str(out)], p.root, t)
+        if code != 0 or not out.exists():
+            return [], "", (f"poetry export 失败（退出码 {code}）：{tail(e or o)}"
+                            "（Poetry 2.x 需要装 poetry-plugin-export 插件）")
+        return ["-r", str(out)], "poetry.lock（poetry export 转换）", ""
+    return [], "", "根目录没有 requirements*.txt / uv.lock / poetry.lock，未检查"
+
+
 def check_pip_audit(p: Project, t: int) -> Check:
     if not p.is_py:
         return Check("pip_vuln", note="不是 Python 项目")
-    reqs = sorted(p.root.glob("requirements*.txt"))
-    if not reqs:
-        return Check("pip_vuln", note="根目录没有 requirements*.txt，未检查（uv/poetry 项目可先导出 requirements.txt）")
     cmd = py_tool("pip-audit", p.root)
     if cmd is None:
         return Check("pip_vuln", note="没有 uvx，也没装 pip-audit")
-    # --disable-pip --no-deps：不临时建虚拟环境，直接查文件里写死的版本（只对写了具体版本的依赖有效）
-    for r in reqs:
-        cmd += ["-r", str(r.relative_to(p.root))]
-    cmd += ["-f", "json", "--progress-spinner", "off", "--disable-pip", "--no-deps"]
-    c = _json_check("pip_vuln", cmd, p, t, parse_pip_audit, ok_codes=(0, 1))
+    with tempfile.TemporaryDirectory() as tmp:
+        args, source, err = resolve_requirements(p, Path(tmp), t)
+        if err:
+            return Check("pip_vuln", note=err)
+        # --disable-pip --no-deps：不临时建虚拟环境，直接查锁定的具体版本
+        c = _json_check("pip_vuln", cmd + args + ["-f", "json", "--progress-spinner", "off",
+                                                  "--disable-pip", "--no-deps"], p, t, parse_pip_audit,
+                        ok_codes=(0, 1))
     if c.status == "ok":
-        c.note = "只检查 requirements 里写了具体版本的依赖"
+        c.note = f"只检查锁定的具体版本（{source}）"
     return c
 
 
@@ -514,6 +587,7 @@ def hotspots(p: Project, since: str) -> list[str]:
 CHECKS = {
     "ts_errors": check_tsc,
     "eslint_problems": check_eslint,
+    "swiftlint_issues": check_swiftlint,
     "knip_issues": check_knip,
     "npm_vuln_high": check_npm_audit,
     "pyright_errors": check_pyright,
@@ -540,32 +614,22 @@ def run_checks(proj: Project, keys: list[str], timeout: int) -> list[Check]:
 STATUS_ZH = {"ok": "已测", "skipped": "跳过", "failed": "失败"}
 
 
-def stack_lines(proj: Project, by_ext: dict[str, int]) -> list[str]:
-    """技术栈按各语言代码行数从多到少列出；有项目配置但没有代码文件的语言放最后。
-    不能只看配置文件或"有没有 .py"，否则以 Swift 为主、带几个脚本的项目会被报成 Python。"""
-    by_lang: dict[str, int] = {}
+def stack_summary(by_ext: dict[str, int]) -> str:
+    """技术栈按各语言代码行数排序展示，不再只看 JS/TS/Python 三个布尔，
+    避免以 Swift/Go/Rust 为主、只带了几个脚本的项目被标成 "Python"。"""
+    lang_lines: dict[str, int] = {}
     for ext, n in by_ext.items():
-        by_lang[LANGUAGES[ext]] = by_lang.get(LANGUAGES[ext], 0) + n
-    ranked = sorted(by_lang.items(), key=lambda kv: -kv[1])
-    parts = [f"{lang} {n:,} 行" for lang, n in ranked]
-    config_only = [s for s, on in (("JavaScript", proj.is_js), ("TypeScript", proj.is_ts), ("Python", proj.is_py))
-                   if on and s not in by_lang]
-    if config_only:
-        parts.append("、".join(config_only) + "（只有配置文件，没有代码文件）")
-    out = ["- 技术栈：" + ("、".join(parts) or "未识别")]
-    unchecked = [lang for lang, _ in ranked if lang not in CHECKED_LANGUAGES]
-    if unchecked:
-        out.append(f"- 覆盖范围：{'、'.join(unchecked)} 没有专项检查（类型、lint、死代码），"
-                   "只计入重复代码和超长文件；下面的类型 / lint / 死代码指标只反映 JavaScript、TypeScript、Python 部分")
-    return out
+        lang = EXT_LANG.get(ext, ext)
+        lang_lines[lang] = lang_lines.get(lang, 0) + n
+    return "、".join(f"{lang} {n:,} 行" for lang, n in sorted(lang_lines.items(), key=lambda kv: -kv[1])) or "未识别"
 
 
 def render_report(proj: Project, checks: list[Check], hot: list[str], by_ext: dict[str, int],
                   total_lines: int, since: str, now: str) -> str:
     out = [f"# 项目体检报告 · {proj.root.name}", "",
            f"- 时间：{now}", f"- 路径：`{proj.root}`",
-           "- 排除：" + ("、".join(f"`{x}`" for x in proj.exclude) or "无（只排除 node_modules、dist 等常见目录）"),
-           *stack_lines(proj, by_ext),
+           "- 排除：" + ("、".join(f"`{x}`" for x in proj.exclude) or "无（只排除 node_modules、dist、.build 等常见目录）"),
+           f"- 技术栈：{stack_summary(by_ext)}",
            f"- 代码总行数：{total_lines:,}（" + "，".join(f"{e} {n:,}" for e, n in sorted(by_ext.items(), key=lambda kv: -kv[1])) + "）",
            ""]
     if proj.is_js and not proj.has_node_modules:
