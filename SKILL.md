@@ -1,6 +1,6 @@
 ---
 name: project-governance
-version: 0.1.2
+version: 0.1.3
 description: >-
   中大型项目（尤其是 AI 编程写出来的）从"修 bug 像打地鼠"走到"能持续维护"的治理流程：体检 → 建测试安全网 →
   删死代码 → 修 bug → 工程化治理 → 交接文档 → 长期门禁。自带体检脚本和"只许变好"检查（gov_audit.py）。
