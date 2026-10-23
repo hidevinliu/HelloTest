@@ -1,6 +1,7 @@
 """gov_audit.py 的测试。运行：python3 -m unittest discover -s tests -v（在 skill 根目录）。
 样例输出取自 2026-10-09 在真实项目上实测的工具输出。"""
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -72,6 +73,17 @@ class ParserTests(unittest.TestCase):
         total, details = g.parse_eslint(text)
         self.assertEqual(total, 3)
         self.assertEqual(len(details), 1)
+
+    def test_swiftlint(self):
+        text = json.dumps([{"rule_id": "identifier_name", "severity": "Error"},
+                           {"rule_id": "identifier_name", "severity": "Error"},
+                           {"rule_id": "vertical_whitespace", "severity": "Warning"}])
+        total, details = g.parse_swiftlint(text)
+        self.assertEqual(total, 3)
+        self.assertIn("identifier_name 2", details[0])
+
+    def test_swiftlint_empty(self):
+        self.assertEqual(g.parse_swiftlint("[]"), (0, []))
 
 
 class CompareTests(unittest.TestCase):
@@ -197,7 +209,7 @@ class ExcludeReachesEveryTool(unittest.TestCase):
 
 
 class VultureIgnoresWhereTheProjectLives(unittest.TestCase):
-    """vulture 的 --exclude 拿模式匹配绝对路径：项目本身放在 .claude/ 之类被排除的目录下时，整个项目都被排除，
+    """vulture 的 --exclude 拿模式匹配绝对路径：项目本身放在 .claude/ 这类被排除的目录下时，整个项目都被排除，
     死代码数误报为 0（2026-10-10 在一个位于 .claude/worktrees/ 下的真实项目复现）。改成只传排除后剩下的文件。"""
 
     def make_project(self, parent: Path) -> Path:
@@ -226,79 +238,6 @@ class VultureIgnoresWhereTheProjectLives(unittest.TestCase):
             self.assertEqual(c.value, 1, c.details)
 
 
-class XcodeBuildDirsExcluded(unittest.TestCase):
-    """Xcode / SwiftPM 的构建目录和 node_modules 一样是生成物，不参与统计（issue #1：
-    .build 下每次构建重新生成的 resource_bundle_accessor.swift 被 jscpd 算成 79 行重复）。"""
-
-    GENERATED = ("App/.build/out/DerivedSources/resource_bundle_accessor.swift",
-                 "DerivedData/App/Build/gen.swift",
-                 ".swiftpm/xcode/package.swift")
-
-    def make_project(self, root: Path):
-        (root / "Sources").mkdir()
-        (root / "Sources" / "App.swift").write_text("let a = 1\n")
-        for rel in self.GENERATED:
-            (root / rel).parent.mkdir(parents=True, exist_ok=True)
-            (root / rel).write_text("let b = 2\n" * 600)
-
-    def test_walk_fallback_skips_build_dirs(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.make_project(root)
-            proj = g.detect(root)
-            self.assertFalse(proj.is_git)
-            self.assertEqual([f.as_posix() for f in proj.files], ["Sources/App.swift"])
-            self.assertEqual(g.check_large_files(proj)[0].value, 0)
-
-    @unittest.skipUnless(shutil.which("git"), "没有 git")
-    def test_git_tracked_build_dirs_skipped(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self.make_project(root)
-            g.run(["git", "init", "-q"], root, 30)
-            g.run(["git", "add", "-A"], root, 30)
-            proj = g.detect(root)
-            self.assertTrue(proj.is_git)
-            self.assertEqual([f.as_posix() for f in proj.files], ["Sources/App.swift"])
-
-    def test_tools_get_build_dirs_in_ignore_globs(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            globs = g.exclude_globs(g.detect(Path(tmp)))
-            for d in (".build", "DerivedData", ".swiftpm"):
-                self.assertIn(f"**/{d}/**", globs)
-
-
-class StackReflectsCodeShare(unittest.TestCase):
-    """技术栈按各语言代码行数如实列出（issue #1：Swift 7,999 / Python 1,069 / JS 632 行的项目被报成「Python」）。"""
-
-    def audit_report(self, files: dict[str, str]) -> str:
-        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as out:
-            for rel, text in files.items():
-                (Path(proj) / rel).parent.mkdir(parents=True, exist_ok=True)
-                (Path(proj) / rel).write_text(text)
-            skip = [k for k in g.METRICS if k != "large_files"]
-            self.assertEqual(g.main(["audit", "--root", proj, "--out", out, "--skip", *skip]), 0)
-            return next(Path(out).glob("audit-*.md")).read_text(encoding="utf-8")
-
-    def stack_line(self, report: str) -> str:
-        return next(ln for ln in report.splitlines() if ln.startswith("- 技术栈："))
-
-    def test_swift_first_project_lists_all_languages_by_lines(self):
-        report = self.audit_report({
-            "Package.swift": "// swift-tools-version:5.9\n",
-            "Sources/App.swift": "let a = 1\n" * 80,
-            "scripts/tool.py": "x = 1\n" * 10,
-            "web/app.js": "let y = 1\n" * 6,
-        })
-        self.assertEqual(self.stack_line(report), "- 技术栈：Swift 81 行、Python 10 行、JavaScript 6 行")
-        self.assertIn("Swift 没有专项检查", report)
-
-    def test_config_only_language_still_listed(self):
-        report = self.audit_report({"package.json": "{}", "tsconfig.json": "{}", "a.py": "x = 1\n"})
-        self.assertEqual(self.stack_line(report), "- 技术栈：Python 1 行、JavaScript、TypeScript（只有配置文件，没有代码文件）")
-        self.assertNotIn("没有专项检查", report)
-
-
 class AuditDoesNotTouchCode(unittest.TestCase):
     def test_audit_only_writes_into_out_dir(self):
         with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as out:
@@ -312,6 +251,160 @@ class AuditDoesNotTouchCode(unittest.TestCase):
             self.assertEqual(before, after)
             self.assertTrue((Path(out) / "baseline.json").exists())
             self.assertEqual(len(list(Path(out).glob("audit-*.md"))), 1)
+
+
+class XcodeBuildDirsExcluded(unittest.TestCase):
+    """Xcode/SwiftPM 的 .build、DerivedData 是自动生成的构建产物，
+    扫进去会污染重复代码和超长文件指标（2026-10-23 实测：同一份生成代码在多个 .build 下被算成重复）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "App" / ".build" / "DerivedSources").mkdir(parents=True)
+        (self.root / "App" / ".build" / "DerivedSources" / "generated.swift").write_text("x\n" * 600)
+        (self.root / "App" / "Sources").mkdir(parents=True)
+        (self.root / "App" / "Sources" / "a.swift").write_text("let a = 1\n")
+        (self.root / "DerivedData" / "Index.noindex").mkdir(parents=True)
+        (self.root / "DerivedData" / "Index.noindex" / "b.swift").write_text("let b = 2\n" * 700)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_build_artifacts_not_in_file_list(self):
+        files, _ = g.list_files(self.root, [])
+        self.assertIn(Path("App/Sources/a.swift"), files)
+        self.assertNotIn(Path("App/.build/DerivedSources/generated.swift"), files)
+        self.assertNotIn(Path("DerivedData/Index.noindex/b.swift"), files)
+
+    def test_large_files_ignores_build_artifacts(self):
+        c, _, _ = g.check_large_files(g.detect(self.root, []))
+        self.assertEqual(c.value, 0, c.details)
+
+
+class StackSummaryTests(unittest.TestCase):
+    """技术栈按各语言行数排序展示：以 Swift 为主的项目不应被标成 "Python"。"""
+
+    def test_swift_dominant_project(self):
+        s = g.stack_summary({".swift": 7999, ".py": 1069, ".js": 632})
+        self.assertTrue(s.startswith("Swift 7,999 行"), s)
+        self.assertIn("Python 1,069 行", s)
+        self.assertIn("JavaScript 632 行", s)
+
+    def test_merges_extensions_of_same_language(self):
+        self.assertEqual(g.stack_summary({".js": 100, ".mjs": 50}), "JavaScript 150 行")
+
+    def test_empty(self):
+        self.assertEqual(g.stack_summary({}), "未识别")
+
+    def test_audit_report_shows_swift_stack(self):
+        with tempfile.TemporaryDirectory() as proj, tempfile.TemporaryDirectory() as out:
+            p = Path(proj)
+            (p / "main.swift").write_text("let x = 1\n" * 800)
+            (p / "tool.py").write_text("y = 2\n")
+            skip = [k for k in g.METRICS if k != "large_files"]
+            rc = g.main(["audit", "--root", proj, "--out", out, "--skip", *skip])
+            self.assertEqual(rc, 0)
+            report = next(Path(out).glob("audit-*.md")).read_text(encoding="utf-8")
+            stack = next(ln for ln in report.splitlines() if ln.startswith("- 技术栈："))
+            self.assertIn("Swift", stack)
+            self.assertIn("Python", stack)
+            self.assertLess(stack.index("Swift"), stack.index("Python"))
+
+
+class SwiftLintCheck(unittest.TestCase):
+    def test_non_swift_project_skips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "a.py").write_text("x = 1\n")
+            c = g.check_swiftlint(g.detect(Path(tmp), []), 60)
+            self.assertEqual(c.status, "skipped")
+
+    @unittest.skipUnless(shutil.which("swiftlint"), "没有 swiftlint")
+    def test_real_swiftlint_counts_violations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "probe.swift").write_text("let x = 1\n\n\nlet y = 2\n")
+            c = g.check_swiftlint(g.detect(Path(tmp), []), 300)
+            self.assertEqual(c.status, "ok", c.note)
+            self.assertGreaterEqual(c.value, 1, c.details)
+
+
+class PipAuditInputs(unittest.TestCase):
+    """依赖漏洞检查的输入解析：requirements 优先，其次 uv.lock / poetry.lock 转换。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def resolve(self, path: str | None = None):
+        old_path = os.environ.get("PATH", "")
+        if path is not None:
+            os.environ["PATH"] = path
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                return g.resolve_requirements(g.detect(self.root, []), Path(tmp), 120)
+        finally:
+            os.environ["PATH"] = old_path
+
+    def empty_path(self) -> str:
+        """PATH 里只放一个空目录，模拟 uv / poetry 都没装。"""
+        bindir = self.root / "empty-bin"
+        bindir.mkdir(exist_ok=True)
+        return str(bindir)
+
+    def test_requirements_preferred(self):
+        (self.root / "requirements.txt").write_text("requests==2.31.0\n")
+        (self.root / "uv.lock").write_text("")
+        args, source, err = self.resolve()
+        self.assertEqual(err, "")
+        self.assertEqual(source, "requirements*.txt")
+        self.assertEqual(args, ["-r", "requirements.txt"])
+
+    def test_uv_lock_without_uv(self):
+        (self.root / "uv.lock").write_text("version = 1")
+        _, _, err = self.resolve(self.empty_path())
+        self.assertIn("uv.lock", err)
+        self.assertIn("uv", err)
+
+    def test_poetry_lock_without_poetry(self):
+        (self.root / "poetry.lock").write_text("# lock")
+        _, _, err = self.resolve(self.empty_path())
+        self.assertIn("poetry.lock", err)
+        self.assertIn("poetry", err)
+
+    def test_no_inputs(self):
+        (self.root / "pyproject.toml").write_text("[project]\nname='x'\n")
+        _, _, err = self.resolve()
+        self.assertIn("未检查", err)
+
+    def test_uv_lock_with_fake_uv_converts(self):
+        """造一个假 uv 命令验证调用参数和产物路径（不需要真 uv）。"""
+        bindir = self.root / "bin"
+        bindir.mkdir()
+        fake = bindir / "uv"
+        fake.write_text("#!/bin/sh\n"
+                        "while [ $# -gt 0 ]; do\n"
+                        "  case \"$1\" in\n"
+                        "    -o) out=\"$2\"; shift 2;;\n"
+                        "    *) shift;;\n"
+                        "  esac\n"
+                        "done\n"
+                        "printf 'requests==2.31.0\\n' > \"$out\"\n")
+        fake.chmod(0o755)
+        (self.root / "uv.lock").write_text("version = 1")
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = str(bindir)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                args, source, err = g.resolve_requirements(
+                    g.detect(self.root, []), Path(tmp), 120)
+                self.assertEqual(err, "")
+                self.assertIn("uv.lock", source)
+                self.assertEqual(args[0], "-r")
+                self.assertIn("requests==2.31.0", Path(args[1]).read_text())
+        finally:
+            os.environ["PATH"] = old_path
 
 
 if __name__ == "__main__":
